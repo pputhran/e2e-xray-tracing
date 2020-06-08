@@ -1,0 +1,174 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Example of End to End tracing with X-Ray
+Transform:
+- AWS::Serverless-2016-10-31
+Globals:
+  Function:
+    Tracing: Active
+  Api:
+    TracingEnabled: true
+Resources:
+  getAllItemsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/get-all-items.getAllItemsHandler
+      Runtime: nodejs12.x
+      MemorySize: 256
+      Timeout: 4
+      Description: A simple example includes a HTTP get method to get all items from
+        a DynamoDB table.
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: SampleTable
+      - AWSXrayWriteOnlyAccess
+      Environment:
+        Variables:
+          SAMPLE_TABLE:
+            Ref: SampleTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /
+            Method: GET
+      CodeUri: getAllItemsFunction
+  getByIdFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/get-by-id.getByIdHandler
+      Runtime: nodejs12.x
+      MemorySize: 256
+      Timeout: 5
+      Description: A simple example includes a HTTP get method to get one item by
+        id from a DynamoDB table.
+      Policies:
+      - AWSXrayWriteOnlyAccess
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: SampleTable
+      Environment:
+        Variables:
+          SAMPLE_TABLE:
+            Ref: SampleTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /{id}
+            Method: GET
+      CodeUri: getByIdFunction
+  putItemFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/put-item.putItemHandler
+      Runtime: nodejs12.x
+      MemorySize: 256
+      Timeout: 5
+      Description: A simple example includes a HTTP post method to add one item to
+        a DynamoDB table.
+      Policies:
+      - AWSXrayWriteOnlyAccess
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: SampleTable
+      - SNSPublishMessagePolicy:
+          TopicName:
+            Fn::GetAtt:
+            - SNSTopic
+            - TopicName
+      Environment:
+        Variables:
+          SAMPLE_TABLE:
+            Ref: SampleTable
+          TOPIC_ARN:
+            Ref: SNSTopic
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /
+            Method: POST
+      CodeUri: putItemFunction
+  SQSProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/sqs-process.handler
+      Runtime: nodejs12.x
+      MemorySize: 256
+      Timeout: 5
+      Description: Lambda SQS
+      Policies:
+      - AWSXrayWriteOnlyAccess
+      - SQSPollerPolicy:
+          QueueName:
+            Fn::GetAtt:
+            - ProcessingQueue
+            - QueueName
+      Environment:
+        Variables:
+          QUEUE_URL:
+            Ref: ProcessingQueue
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue:
+              Fn::GetAtt:
+              - ProcessingQueue
+              - Arn
+            BatchSize: 10
+            Enabled: true
+      CodeUri: SQSProcessorFunction
+  SampleTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      PrimaryKey:
+        Name: id
+        Type: String
+      ProvisionedThroughput:
+        ReadCapacityUnits: 2
+        WriteCapacityUnits: 2
+  ProcessingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: process-queue
+  SqsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: ProcessingQueuePolicy
+        Statement:
+        - Sid: Allow-SNS-SendMessage
+          Effect: Allow
+          Principal: '*'
+          Action:
+          - sqs:SendMessage
+          Resource:
+            Fn::GetAtt:
+            - ProcessingQueue
+            - Arn
+          Condition:
+            ArnEquals:
+              aws:SourceArn:
+                Ref: SNSTopic
+      Queues:
+      - Ref: ProcessingQueue
+  SNSTopic:
+    Type: AWS::SNS::Topic
+  SnsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: sqs
+      Endpoint:
+        Fn::GetAtt:
+        - ProcessingQueue
+        - Arn
+      TopicArn:
+        Ref: SNSTopic
+Outputs:
+  WebEndpoint:
+    Description: API Gateway endpoint URL for Prod stage
+    Value:
+      Fn::Sub: https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/
